@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { api, ApiError } from '../lib/api'
 import { useAuth } from '../lib/auth'
 import { imageUrl, type CommentItem, type PostDetail as PostDetailType } from '../lib/types'
@@ -31,6 +31,7 @@ function formatTime(iso: string): string {
 
 export default function PostDetail() {
   const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
   const { user } = useAuth()
   const [post, setPost] = useState<PostDetailType | null>(null)
   const [loading, setLoading] = useState(true)
@@ -48,6 +49,8 @@ export default function PostDetail() {
   const [newComment, setNewComment] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [confirmDeleteComment, setConfirmDeleteComment] = useState<CommentItem | null>(null)
+  const [isAuthor, setIsAuthor] = useState(false)
+  const [confirmDeletePost, setConfirmDeletePost] = useState(false)
   const commentSentinelRef = useRef<HTMLDivElement>(null)
   const commentListRef = useRef<HTMLUListElement>(null)
 
@@ -57,6 +60,13 @@ export default function PostDetail() {
     try {
       const res = await api.get<{ post: PostDetailType }>(`/posts/${id}`)
       setPost(res.post)
+      // 判断作者：当前账号是否拥有该帖的面具（用面具列表对比 token）
+      try {
+        const m = await api.get<{ masks: { token: string }[] }>('/masks')
+        setIsAuthor(m.masks.some((x) => x.token === res.post.mask.token))
+      } catch {
+        setIsAuthor(false)
+      }
     } catch (e) {
       setError(e instanceof ApiError ? e.message : '加载失败')
     } finally {
@@ -139,6 +149,16 @@ export default function PostDetail() {
       await api.del(`/comments/${confirmDeleteComment.id}`)
       setConfirmDeleteComment(null)
       setComments((prev) => prev.filter((c) => c.id !== confirmDeleteComment.id))
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : '删除失败')
+    }
+  }
+
+  const onDeletePost = async () => {
+    setConfirmDeletePost(false)
+    try {
+      await api.del(`/posts/${id}`)
+      navigate('/')
     } catch (e) {
       setError(e instanceof ApiError ? e.message : '删除失败')
     }

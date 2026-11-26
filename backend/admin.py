@@ -209,3 +209,72 @@ def reset_admin_password(admin_id: int):
         conn.close()
 
     return jsonify({"ok": True})
+
+
+@bp.get("/api/admin/audit")
+@auth.login_required
+@admin_required
+def list_audit():
+    """审计日志（只读）：普通管理员只看自己，超级管理员看全部；支持时间/操作/管理员筛选。"""
+    from datetime import datetime, timedelta, timezone
+
+    action = request.args.get("action") or None
+    range_type = request.args.get("range") or "all"   # today | 7d | 30d | all
+    actor_id = request.args.get("actor") or None
+
+    conn = db.get_connection()
+    try:
+        where = []
+        params: list = []
+
+        # 权限：普通管理员只能看自己
+        if g.user["role"] != "super_admin":
+            where.append("a.actor_user_id = ?")
+            params.append(g.user["id"])
+        elif actor_id:
+            where.append("a.actor_user_id = ?")
+            params.append(int(actor_id))
+
+        if action:
+            where.append("a.action = ?")
+            params.append(action)
+
+        # 时间范围
+        if range_type in ("today", "7d", "30d"):
+            now = datetime.now(timezone.utc)
+            if range_type == "today":
+                start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            elif range_type == "7d":
+                start = now - timedelta(days=7)
+            else:
+                start = now - timedelta(days=30)
+            where.append("a.created_at >= ?")
+            params.append(start.strftime("%Y-%m-%dT%H:%M:%SZ"))
+
+        sql = (
+            "SELECT a.id, a.actor_user_id, a.action, a.target_type, a.target_id, "
+            "a.reason, a.detail, a.actor_ip, a.source_page, a.created_at "
+            "FROM audit_log a "
+            + ("WHERE " + " AND ".join(where) + " " if where else "")
+            + "ORDER BY a.created_at DESC, a.id DESC LIMIT 200"
+        )
+        rows = conn.execute(sql, params).fetchall()
+        logs = [
+            {
+                "id": r["id"],
+                "actorUserId": r["actor_user_id"],
+                "action": r["action"],
+                "targetType": r["target_type"],
+                "targetId": r["target_id"],
+                "reason": r["reason"],
+                "detail": r["detail"],
+                "actorIp": r["actor_ip"],
+                "sourcePage": r["source_page"],
+                "createdAt": r["created_at"],
+            }
+            for r in rows
+        ]
+    finally:
+        conn.close()
+
+    return jsonify({"logs": logs})
