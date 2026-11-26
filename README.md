@@ -148,7 +148,7 @@ cd ../backend && python app.py   # Flask 同时提供 API 与前端静态文件
 ## 测试
 
 ```bash
-cd F:\myweb\ccnu_treehole
+# 在仓库根目录执行
 python tests/acceptance.py
 ```
 
