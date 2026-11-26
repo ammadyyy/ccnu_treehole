@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { api, ApiError } from '../lib/api'
+import { api, ApiError } from '../../lib/api'
 import Button from '../../components/ui/Button'
 import EmptyState from '../../components/ui/EmptyState'
 import Modal from '../../components/ui/Modal'

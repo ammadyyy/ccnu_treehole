@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, ApiError } from '../lib/api'
+import { api, ApiError } from '../../lib/api'
 import Spinner from '../../components/ui/Spinner'
 
 interface Stats {
