@@ -278,3 +278,61 @@ def list_audit():
         conn.close()
 
     return jsonify({"logs": logs})
+
+
+@bp.get("/api/admin/stats")
+@auth.login_required
+@admin_required
+def admin_stats():
+    """后台首页统计（30 秒轮询用）：按服务器自然日（UTC）统计今日新增。"""
+    from datetime import datetime, timezone
+
+    today_start = datetime.now(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    conn = db.get_connection()
+    try:
+        pending_reports = conn.execute(
+            "SELECT COUNT(*) AS c FROM reports WHERE status = 'open'"
+        ).fetchone()["c"]
+        today_reports = conn.execute(
+            "SELECT COUNT(*) AS c FROM reports WHERE created_at >= ?", (today_start,)
+        ).fetchone()["c"]
+        active_users = conn.execute(
+            "SELECT COUNT(*) AS c FROM users WHERE status = 'active'"
+        ).fetchone()["c"]
+        deleted_users = conn.execute(
+            "SELECT COUNT(*) AS c FROM users WHERE deleted_at IS NOT NULL"
+        ).fetchone()["c"]
+        total_posts = conn.execute(
+            "SELECT COUNT(*) AS c FROM posts WHERE status = 'published'"
+        ).fetchone()["c"]
+        today_posts = conn.execute(
+            "SELECT COUNT(*) AS c FROM posts WHERE status = 'published' AND created_at >= ?",
+            (today_start,),
+        ).fetchone()["c"]
+        today_comments = conn.execute(
+            "SELECT COUNT(*) AS c FROM comments WHERE created_at >= ?", (today_start,)
+        ).fetchone()["c"]
+        deleted_mask_posts = conn.execute(
+            "SELECT COUNT(*) AS c FROM posts p "
+            "JOIN masks m ON p.mask_id = m.id "
+            "JOIN users u ON m.user_id = u.id "
+            "WHERE p.status = 'published' AND u.deleted_at IS NOT NULL"
+        ).fetchone()["c"]
+    finally:
+        conn.close()
+
+    return jsonify(
+        {
+            "pendingReports": pending_reports,
+            "todayReports": today_reports,
+            "activeUsers": active_users,
+            "deletedUsers": deleted_users,
+            "totalPosts": total_posts,
+            "todayPosts": today_posts,
+            "todayComments": today_comments,
+            "deletedMaskPosts": deleted_mask_posts,
+        }
+    )

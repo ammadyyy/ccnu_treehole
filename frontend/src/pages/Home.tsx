@@ -30,6 +30,8 @@ function maskLabel(token: string, status: string): string {
 export default function Home() {
   const [sort, setSort] = useState<Sort>('latest')
   const [tag, setTag] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
+  const [searchInput, setSearchInput] = useState('')
   const [posts, setPosts] = useState<PostCard[]>([])
   const [cursor, setCursor] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -61,26 +63,41 @@ export default function Home() {
     setCursor(null)
   }, [tag])
 
-  // 排序/标签变化时重置加载
+  const loadSearch = useCallback(
+    async (reset: boolean) => {
+      const params = new URLSearchParams({ q: query })
+      if (tag) params.set('tag', tag)
+      if (!reset && cursor) params.set('cursor', cursor)
+      const res = await api.get<{ posts: PostCard[]; nextCursor: string | null }>(
+        `/search?${params.toString()}`,
+      )
+      setPosts((prev) => (reset ? res.posts : [...prev, ...res.posts]))
+      setCursor(res.nextCursor)
+    },
+    [query, tag, cursor],
+  )
+
+  // 排序/标签/搜索词变化时重置加载
   useEffect(() => {
     setLoading(true)
     setError('')
-    const fn = sort === 'latest' ? loadLatest(true) : loadHot()
+    const fn = query ? loadSearch(true) : sort === 'latest' ? loadLatest(true) : loadHot()
     fn
       .catch((e: Error) => setError(e instanceof ApiError ? e.message : '加载失败'))
       .finally(() => setLoading(false))
-  }, [sort, tag, loadLatest, loadHot])
+  }, [query, sort, tag, loadLatest, loadHot, loadSearch])
 
-  // 最新列表滚动加载
+  // 列表滚动加载（最新或搜索）
   useEffect(() => {
-    if (sort !== 'latest' || !cursor || loadingMore) return
+    if ((!query && sort !== 'latest') || !cursor || loadingMore) return
     const el = sentinelRef.current
     if (!el) return
     const obs = new IntersectionObserver(
       (entries) => {
         if (entries[0].isIntersecting) {
           setLoadingMore(true)
-          loadLatest(false)
+          const fn = query ? loadSearch(false) : loadLatest(false)
+          fn
             .catch(() => {})
             .finally(() => setLoadingMore(false))
         }
@@ -89,7 +106,7 @@ export default function Home() {
     )
     obs.observe(el)
     return () => obs.disconnect()
-  }, [sort, cursor, loadingMore, loadLatest])
+  }, [query, sort, cursor, loadingMore, loadLatest, loadSearch])
 
   const selectTag = (t: string | null) => {
     setTag(t)
@@ -99,8 +116,52 @@ export default function Home() {
 
   return (
     <div>
-      {/* 排序切换 */}
-      <div className="flex gap-2">
+      {/* 搜索框 */}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault()
+          setQuery(searchInput.trim())
+          setPosts([])
+          setCursor(null)
+        }}
+        className="flex gap-2"
+      >
+        <input
+          type="text"
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          placeholder="搜索标题、正文、回应…"
+          className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-gray-500 focus:outline-none"
+        />
+        <button
+          type="submit"
+          className="shrink-0 rounded-md bg-gray-900 px-4 py-2 text-sm text-white hover:bg-gray-700"
+        >
+          搜索
+        </button>
+      </form>
+
+      {query && (
+        <p className="mt-2 text-xs text-gray-400">
+          搜索「{query}」
+          <button
+            type="button"
+            onClick={() => {
+              setQuery('')
+              setSearchInput('')
+              setPosts([])
+              setCursor(null)
+            }}
+            className="ml-2 text-gray-500 underline"
+          >
+            清除
+          </button>
+        </p>
+      )}
+
+      {/* 排序切换（仅非搜索状态） */}
+      {!query && (
+      <div className="mt-3 flex gap-2">
         {(['latest', 'hot'] as Sort[]).map((s) => (
           <button
             key={s}
@@ -114,6 +175,7 @@ export default function Home() {
           </button>
         ))}
       </div>
+      )}
 
       {/* 标签筛选 */}
       <div className="mt-3 flex flex-wrap gap-2">
@@ -192,8 +254,8 @@ export default function Home() {
         </ul>
       )}
 
-      {/* 滚动加载哨兵（仅最新列表） */}
-      {sort === 'latest' && (
+      {/* 滚动加载哨兵（最新列表或搜索） */}
+      {(query || sort === 'latest') && (
         <div ref={sentinelRef} className="flex justify-center py-4">
           {loadingMore ? <Spinner /> : cursor ? null : <span className="text-xs text-gray-400">已经到底了</span>}
         </div>

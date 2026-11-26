@@ -8,6 +8,7 @@ import ConfirmDialog from '../components/ui/ConfirmDialog'
 import EmptyState from '../components/ui/EmptyState'
 import Modal from '../components/ui/Modal'
 import Spinner from '../components/ui/Spinner'
+import ReportDialog from '../components/ReportDialog'
 
 function maskLabel(token: string, status: string): string {
   if (status === 'destroyed') return `${token} · 已销毁面具`
@@ -51,6 +52,7 @@ export default function PostDetail() {
   const [confirmDeleteComment, setConfirmDeleteComment] = useState<CommentItem | null>(null)
   const [isAuthor, setIsAuthor] = useState(false)
   const [confirmDeletePost, setConfirmDeletePost] = useState(false)
+  const [reportTarget, setReportTarget] = useState<{ type: 'post' | 'comment'; id: number } | null>(null)
   const commentSentinelRef = useRef<HTMLDivElement>(null)
   const commentListRef = useRef<HTMLUListElement>(null)
 
@@ -249,15 +251,26 @@ export default function PostDetail() {
           </span>
         ))}
         <span>{formatTime(post.createdAt)}</span>
-        {isAuthor && (
-          <button
-            type="button"
-            onClick={() => setConfirmDeletePost(true)}
-            className="ml-auto text-red-600 hover:underline"
-          >
-            删除帖子
-          </button>
-        )}
+        <div className="ml-auto flex gap-3">
+          {user && !isAuthor && (
+            <button
+              type="button"
+              onClick={() => setReportTarget({ type: 'post', id: post.id })}
+              className="text-gray-400 hover:text-gray-600"
+            >
+              举报
+            </button>
+          )}
+          {isAuthor && (
+            <button
+              type="button"
+              onClick={() => setConfirmDeletePost(true)}
+              className="text-red-600 hover:underline"
+            >
+              删除帖子
+            </button>
+          )}
+        </div>
       </div>
 
       {error && <p className="mt-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">{error}</p>}
@@ -284,14 +297,28 @@ export default function PostDetail() {
                   <span>{formatTime(c.createdAt)}</span>
                 </div>
                 <p className="preserve-text mt-1 text-sm text-gray-800">{c.body}</p>
-                {isMyComment(c) && (
-                  <button
-                    type="button"
-                    onClick={() => setConfirmDeleteComment(c)}
-                    className="mt-1 text-xs text-gray-400 hover:text-red-600"
-                  >
-                    删除
-                  </button>
+                {isMyComment(c) ? (
+                  <div className="mt-1">
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDeleteComment(c)}
+                      className="text-xs text-gray-400 hover:text-red-600"
+                    >
+                      删除
+                    </button>
+                  </div>
+                ) : (
+                  user && (
+                    <div className="mt-1">
+                      <button
+                        type="button"
+                        onClick={() => setReportTarget({ type: 'comment', id: c.id })}
+                        className="text-xs text-gray-400 hover:text-gray-600"
+                      >
+                        举报
+                      </button>
+                    </div>
+                  )
                 )}
               </li>
             ))}
@@ -369,6 +396,14 @@ export default function PostDetail() {
         danger
         onConfirm={onDeletePost}
         onCancel={() => setConfirmDeletePost(false)}
+      />
+
+      <ReportDialog
+        open={reportTarget !== null}
+        targetType={reportTarget?.type ?? 'post'}
+        targetId={reportTarget?.id ?? 0}
+        onClose={() => setReportTarget(null)}
+        onSubmitted={() => setReportTarget(null)}
       />
     </div>
   )
