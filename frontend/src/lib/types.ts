@@ -76,14 +76,19 @@ export interface PostDetail {
 
 export interface NotificationItem {
   id: number
+  mask: { token: string; status: string }
   postId: number
-  maskToken: string
-  maskStatus: string
   postTitle: string | null
-  isRead: boolean
   contentDeleted: boolean
   commentDeleted: boolean
+  isRead: boolean
   createdAt: string
+}
+
+export interface NotificationListResult {
+  notifications: NotificationItem[]
+  nextCursor: string | null
+  unreadCount: number
 }
 
 export type TagName = '学业' | '情感' | '吐槽' | '求助' | '深夜' | '失物' | '其他'
