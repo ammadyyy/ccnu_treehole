@@ -237,6 +237,15 @@ def logout():
     return resp
 
 
+@bp.post("/api/auth/change-email")
+@login_required
+def change_email():
+    """修改邮箱占位接口：本期不实现，符合规格「保留接口、点击显示开发中」。"""
+    return jsonify(
+        {"error": {"code": "NOT_IMPLEMENTED", "message": "修改邮箱功能开发中，敬请期待"}}
+    ), 501
+
+
 @bp.get("/api/me")
 def me():
     user = current_user()
