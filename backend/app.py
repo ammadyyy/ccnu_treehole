@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from flask import Flask, jsonify, send_from_directory
 
+import account
+import admin
 import auth
 import config
 import db
@@ -24,6 +26,8 @@ def create_app() -> Flask:
     app.config["SESSION_COOKIE_SECURE"] = config.Config.COOKIE_SECURE
 
     app.register_blueprint(auth.bp)
+    app.register_blueprint(account.bp)
+    app.register_blueprint(admin.bp)
     app.register_blueprint(masks.bp)
     app.register_blueprint(posts.bp)
 
