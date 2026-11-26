@@ -1,1 +1,8 @@
 @import "tailwindcss";
+
+/* 正文与回应保留换行、连续空格，纯文本展示，不解析 HTML */
+.preserve-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
