@@ -17,6 +17,7 @@ import db
 import identity
 import masks
 import posts
+import reports
 
 FRONTEND_DIST = config.BASE_DIR / "frontend" / "dist"
 
@@ -36,6 +37,7 @@ def create_app() -> Flask:
     app.register_blueprint(identity.bp)
     app.register_blueprint(masks.bp)
     app.register_blueprint(posts.bp)
+    app.register_blueprint(reports.bp)
 
     # 同源静态服务：生产构建产物由 Flask 提供，SPA 路由回退到 index.html。
     @app.get("/", defaults={"path": ""})
