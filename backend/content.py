@@ -189,6 +189,7 @@ def delete_post(post_id: int):
             "mask_id = NULL, status = 'deleted', deleted_at = ? WHERE id = ?",
             (now, post_id),
         )
+        conn.execute("UPDATE notifications SET content_deleted = 1 WHERE post_id = ?", (post_id,))
         admin.write_audit(conn, g.user["id"], "delete_post", "post", post_id, reason=reason)
         conn.commit()
     finally:

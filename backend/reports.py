@@ -314,6 +314,9 @@ def resolve_report(report_id: int):
                     "mask_id = NULL, status = 'deleted', deleted_at = ? WHERE id = ?",
                     (now, target_id),
                 )
+                conn.execute(
+                    "UPDATE notifications SET content_deleted = 1 WHERE post_id = ?", (target_id,)
+                )
                 admin.write_audit(conn, g.user["id"], "resolve_report_remove", "post",
                                   target_id, reason=reason, detail=detail)
             else:
