@@ -10,9 +10,11 @@ from flask import Flask, jsonify, send_from_directory
 import account
 import admin
 import auth
+import comments
 import config
 import content
 import db
+import identity
 import masks
 import posts
 
@@ -29,7 +31,9 @@ def create_app() -> Flask:
     app.register_blueprint(auth.bp)
     app.register_blueprint(account.bp)
     app.register_blueprint(admin.bp)
+    app.register_blueprint(comments.bp)
     app.register_blueprint(content.bp)
+    app.register_blueprint(identity.bp)
     app.register_blueprint(masks.bp)
     app.register_blueprint(posts.bp)
 
