@@ -389,7 +389,171 @@ def uc13():
     assert r.status_code == 201, "原邮箱应可重新注册"
 
 
-CASES = [uc01_02, uc04, uc05, uc06, uc07, uc08, uc09, uc10, uc11, uc12, uc13]
+# ---------- 边界用例：限速 ----------
+
+@case("边界-限速：30秒内发两帖 → 429")
+def edge_rate_post():
+    c = new_client()
+    register(c, "erp@test.com")
+    ensure_mask(c)
+    r = c.post("/api/posts", json={"title": "第一帖", "body": "内容", "tags": ["其他"]})
+    assert r.status_code == 201, f"第一帖应 201 {r.status_code}"
+    r = c.post("/api/posts", json={"title": "第二帖", "body": "内容", "tags": ["其他"]})
+    assert r.status_code == 429, f"30秒内第二帖应 429 {r.status_code}"
+
+
+@case("边界-限速：30秒内两回应 → 429")
+def edge_rate_comment():
+    author = new_client()
+    register(author, "erca@test.com")
+    ensure_mask(author)
+    post_id = author.post("/api/posts", json={"title": "等回应", "body": "内容", "tags": ["其他"]}).get_json()["post"]["id"]
+    c = new_client()
+    register(c, "ercc@test.com")
+    ensure_mask(c)
+    r = c.post(f"/api/posts/{post_id}/comments", json={"body": "回应1"})
+    assert r.status_code == 201, f"第一回应应 201 {r.status_code}"
+    r = c.post(f"/api/posts/{post_id}/comments", json={"body": "回应2"})
+    assert r.status_code == 429, f"30秒内第二回应应 429 {r.status_code}"
+
+
+@case("边界-限速：切换面具不重置发帖计时")
+def edge_rate_mask_switch():
+    c = new_client()
+    register(c, "erm@test.com")
+    ensure_mask(c)
+    c.post("/api/posts", json={"title": "第一帖", "body": "内容", "tags": ["其他"]})
+    # 领新面具并切换
+    new_mask_id = c.post("/api/masks").get_json()["mask"]["id"]
+    c.post("/api/session/current-mask", json={"maskId": new_mask_id})
+    r = c.post("/api/posts", json={"title": "第二帖", "body": "内容", "tags": ["其他"]})
+    assert r.status_code == 429, f"切换面具后发帖仍应 429（账号级限速）{r.status_code}"
+
+
+# ---------- 边界用例：权限 ----------
+
+@case("边界-权限：游客发帖 401 / 普通用户访问管理员 403")
+def edge_permission():
+    guest = new_client()
+    r = guest.post("/api/posts", json={"title": "t", "body": "b", "tags": ["其他"]})
+    assert r.status_code == 401, f"游客发帖应 401 {r.status_code}"
+
+    c = new_client()
+    register(c, "ep@test.com")
+    r = c.get("/api/admin/admins")
+    assert r.status_code == 403, f"普通用户访问管理员接口应 403 {r.status_code}"
+
+
+# ---------- 边界用例：删除一致性 ----------
+
+@case("边界-删除一致性：删带图帖清空 images + uploads 文件")
+def edge_delete_image():
+    c = new_client()
+    register(c, "edi@test.com")
+    ensure_mask(c)
+    r = c.post("/api/posts", data={
+        "title": "带图待删", "body": "内容", "tags": json.dumps(["其他"]),
+        "images": (io.BytesIO(make_jpeg()), "t.jpg"),
+    }, content_type="multipart/form-data")
+    assert r.status_code == 201
+    post_id = r.get_json()["post"]["id"]
+
+    up = Path(os.environ["UPLOAD_DIR"])
+    before = len(list(up.rglob("*.webp")))
+    assert before >= 2, f"应有原图+缩略图，实际 {before}"
+
+    r = c.delete(f"/api/posts/{post_id}")
+    assert r.status_code == 200, f"删帖 {r.status_code}"
+
+    conn = db.get_connection()
+    cnt = conn.execute("SELECT COUNT(*) FROM images WHERE post_id = ?", (post_id,)).fetchone()[0]
+    conn.close()
+    assert cnt == 0, "删帖后 images 表应清空"
+
+    after = len(list(up.rglob("*.webp")))
+    assert after < before, "删帖后 uploads 文件应减少"
+
+
+@case("边界-删除一致性：删回应 comment_count 减 1")
+def edge_delete_comment():
+    author = new_client()
+    register(author, "edca@test.com")
+    ensure_mask(author)
+    post_id = author.post("/api/posts", json={"title": "等回应", "body": "内容", "tags": ["其他"]}).get_json()["post"]["id"]
+
+    c = new_client()
+    register(c, "edcc@test.com")
+    ensure_mask(c)
+    r = c.post(f"/api/posts/{post_id}/comments", json={"body": "回应"})
+    assert r.status_code == 201
+    comment_id = r.get_json()["comment"]["id"]
+
+    r = c.get(f"/api/posts/{post_id}")
+    before = r.get_json()["post"]["commentCount"]
+    assert before == 1, f"回应后 commentCount 应 1，实际 {before}"
+
+    r = c.delete(f"/api/comments/{comment_id}")
+    assert r.status_code == 200, f"删回应 {r.status_code}"
+
+    r = c.get(f"/api/posts/{post_id}")
+    after = r.get_json()["post"]["commentCount"]
+    assert after == 0, f"删回应后 commentCount 应 0，实际 {after}"
+
+
+# ---------- 边界用例：图片 ----------
+
+@case("边界-图片：.exe 改名 .jpg 400 / >5MB 400")
+def edge_image():
+    c = new_client()
+    register(c, "eimg@test.com")
+    ensure_mask(c)
+
+    r = c.post("/api/posts", data={
+        "title": "恶意", "body": "内容", "tags": json.dumps(["其他"]),
+        "images": (io.BytesIO(b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00"), "fake.jpg"),
+    }, content_type="multipart/form-data")
+    assert r.status_code == 400, f".exe 改名 .jpg 应 400 {r.status_code}"
+
+    r = c.post("/api/posts", data={
+        "title": "超大", "body": "内容", "tags": json.dumps(["其他"]),
+        "images": (io.BytesIO(b"x" * (5 * 1024 * 1024 + 100)), "big.jpg"),
+    }, content_type="multipart/form-data")
+    assert r.status_code == 400, f">5MB 应 400 {r.status_code}"
+
+
+# ---------- 边界用例：通知 ----------
+
+@case("边界-通知：自回应不生成 / 删帖后 contentDeleted")
+def edge_notification():
+    author = new_client()
+    register(author, "ena@test.com")
+    ensure_mask(author)
+    post_id = author.post("/api/posts", json={"title": "通知帖", "body": "内容", "tags": ["其他"]}).get_json()["post"]["id"]
+
+    # 自回应：不生成通知
+    author.post(f"/api/posts/{post_id}/comments", json={"body": "自回应"})
+    r = author.get("/api/notifications")
+    assert len(r.get_json()["notifications"]) == 0, "自回应不应生成通知"
+
+    # 他人回应：生成通知
+    c = new_client()
+    register(c, "enc@test.com")
+    ensure_mask(c)
+    c.post(f"/api/posts/{post_id}/comments", json={"body": "回应你"})
+    r = author.get("/api/notifications")
+    assert len(r.get_json()["notifications"]) == 1, "跨账号回应应生成 1 条通知"
+
+    # 删帖后通知 contentDeleted=true
+    author.delete(f"/api/posts/{post_id}")
+    r = author.get("/api/notifications")
+    n = r.get_json()["notifications"][0]
+    assert n["contentDeleted"] is True, "删帖后通知 contentDeleted 应为 true"
+
+
+CASES = [uc01_02, uc04, uc05, uc06, uc07, uc08, uc09, uc10, uc11, uc12, uc13,
+         edge_rate_post, edge_rate_comment, edge_rate_mask_switch,
+         edge_permission, edge_delete_image, edge_delete_comment,
+         edge_image, edge_notification]
 
 
 def main() -> None:
