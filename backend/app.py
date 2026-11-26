@@ -7,8 +7,11 @@ from __future__ import annotations
 
 from flask import Flask, jsonify, send_from_directory
 
+import auth
 import config
 import db
+import masks
+import posts
 
 FRONTEND_DIST = config.BASE_DIR / "frontend" / "dist"
 
@@ -19,6 +22,10 @@ def create_app() -> Flask:
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
     app.config["SESSION_COOKIE_SECURE"] = config.Config.COOKIE_SECURE
+
+    app.register_blueprint(auth.bp)
+    app.register_blueprint(masks.bp)
+    app.register_blueprint(posts.bp)
 
     # 同源静态服务：生产构建产物由 Flask 提供，SPA 路由回退到 index.html。
     @app.get("/", defaults={"path": ""})

@@ -2,18 +2,21 @@
 
 export type Role = 'user' | 'admin' | 'super_admin'
 
+export interface MaskSummary {
+  id: number
+  token: string
+  status: 'active' | 'destroyed'
+}
+
 export interface Me {
   id: number
   email: string
   role: Role
-  currentMask: Mask | null
+  currentMask: MaskSummary | null
   maskCount: number
 }
 
-export interface Mask {
-  id: number
-  token: string
-  status: 'active' | 'destroyed'
+export interface Mask extends MaskSummary {
   createdAt: string
   destroyedAt: string | null
   postCount: number

@@ -17,3 +17,11 @@ def utcnow() -> str:
 def utcnow_ms() -> str:
     """返回当前 UTC 时间，含毫秒（用于需要更高精度的场景）。"""
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.") + f"{datetime.now(UTC).microsecond // 1000:03d}Z"
+
+
+def seconds_since(iso_str: str | None) -> float | None:
+    """返回自某个 ISO-8601 UTC 时间以来的秒数；为空时返回 None。"""
+    if not iso_str:
+        return None
+    dt = datetime.strptime(iso_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    return (datetime.now(UTC) - dt).total_seconds()
