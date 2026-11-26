@@ -127,7 +127,8 @@ def list_reports():
             params += [status, reason]
 
         sql = (
-            "SELECT r.target_type, r.target_id, COUNT(*) AS cnt, MAX(r.created_at) AS latest "
+            "SELECT r.target_type, r.target_id, COUNT(*) AS cnt, MAX(r.created_at) AS latest, "
+            "MIN(r.id) AS anchor_id "
             "FROM reports r WHERE " + " AND ".join(where) + " "
             "GROUP BY r.target_type, r.target_id "
             "ORDER BY cnt DESC, latest ASC LIMIT 100"
@@ -138,6 +139,7 @@ def list_reports():
         for r in rows:
             items.append(
                 {
+                    "anchorId": r["anchor_id"],
                     "targetType": r["target_type"],
                     "targetId": r["target_id"],
                     "count": r["cnt"],
