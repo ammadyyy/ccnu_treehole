@@ -7,6 +7,7 @@ from flask import Blueprint, g, jsonify, request
 
 import admin
 import auth
+import config
 import db
 from utils import utcnow
 
@@ -245,3 +246,124 @@ def report_detail(report_id: int):
             "context": context,
         }
     )
+
+
+def _delete_post_files(conn, post_id: int) -> None:
+    from pathlib import Path
+    rows = conn.execute("SELECT path, thumb_path FROM images WHERE post_id = ?", (post_id,)).fetchall()
+    for r in rows:
+        for rel in (r["path"], r["thumb_path"]):
+            if not rel:
+                continue
+            p = config.Config.UPLOAD_DIR / rel.replace("uploads/", "", 1)
+            try:
+                Path(p).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+@bp.post("/api/admin/reports/<int:report_id>/resolve")
+@auth.login_required
+@admin.admin_required
+def resolve_report(report_id: int):
+    """举报处理与结案：保留或删除；同目标未处理举报统一结案；写审计。"""
+    data = request.get_json(silent=True) or {}
+    action = data.get("action")            # keep | remove
+    reason = data.get("reason") or ""      # 固定理由
+    detail = (data.get("detail") or "").strip()
+
+    if action not in ("keep", "remove"):
+        return _err("INVALID_ACTION", "处理动作无效", 400)
+    if reason not in REPORT_REASONS:
+        return _err("INVALID_REASON", "处理理由无效", 400)
+    if len(detail) < 10:
+        return _err("REASON_REQUIRED", "请填写至少 10 字的处理说明", 400)
+
+    conn = db.get_connection()
+    try:
+        anchor = conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone()
+        if anchor is None:
+            return _err("NOT_FOUND", "举报不存在", 404)
+        target_type, target_id = anchor["target_type"], anchor["target_id"]
+
+        # 目标是否已被用户自行删除
+        target_deleted = False
+        if target_type == "post":
+            p = conn.execute("SELECT * FROM posts WHERE id = ?", (target_id,)).fetchone()
+            target_deleted = p is None or p["status"] == "deleted"
+        else:
+            c = conn.execute("SELECT id FROM comments WHERE id = ?", (target_id,)).fetchone()
+            target_deleted = c is None
+
+        now = utcnow()
+        new_status = "removed" if action == "remove" else "kept"
+        # 同目标未处理举报统一结案
+        conn.execute(
+            "UPDATE reports SET status = ?, handled_by = ?, handled_reason = ?, handled_detail = ?, handled_at = ? "
+            "WHERE target_type = ? AND target_id = ? AND status = 'open'",
+            (new_status, g.user["id"], reason, detail, now, target_type, target_id),
+        )
+
+        if action == "remove" and not target_deleted:
+            if target_type == "post":
+                _delete_post_files(conn, target_id)
+                conn.execute("DELETE FROM comments WHERE post_id = ?", (target_id,))
+                conn.execute("DELETE FROM images WHERE post_id = ?", (target_id,))
+                conn.execute(
+                    "UPDATE posts SET title = NULL, body = NULL, tag1 = NULL, tag2 = NULL, "
+                    "mask_id = NULL, status = 'deleted', deleted_at = ? WHERE id = ?",
+                    (now, target_id),
+                )
+                admin.write_audit(conn, g.user["id"], "resolve_report_remove", "post",
+                                  target_id, reason=reason, detail=detail)
+            else:
+                c = conn.execute("SELECT * FROM comments WHERE id = ?", (target_id,)).fetchone()
+                if c:
+                    conn.execute("DELETE FROM comments WHERE id = ?", (target_id,))
+                    conn.execute(
+                        "UPDATE posts SET comment_count = MAX(0, comment_count - 1) WHERE id = ?",
+                        (c["post_id"],),
+                    )
+                    conn.execute(
+                        "UPDATE notifications SET comment_deleted = 1 WHERE comment_id = ?", (target_id,)
+                    )
+                admin.write_audit(conn, g.user["id"], "resolve_report_remove", "comment",
+                                  target_id, reason=reason, detail=detail)
+        elif action == "remove" and target_deleted:
+            admin.write_audit(conn, g.user["id"], "resolve_report_remove_already_deleted",
+                              target_type, target_id, reason=reason, detail=detail)
+        else:
+            admin.write_audit(conn, g.user["id"], "resolve_report_keep", target_type,
+                              target_id, reason=reason, detail=detail)
+
+        conn.commit()
+    finally:
+        conn.close()
+
+    return jsonify({"ok": True})
+
+
+@bp.post("/api/admin/reports/<int:report_id>/notes")
+@auth.login_required
+@admin.admin_required
+def add_report_note(report_id: int):
+    """追加内部备注（可多次，不可改删）。"""
+    data = request.get_json(silent=True) or {}
+    body = (data.get("body") or "").strip()
+    if not body:
+        return _err("INVALID_NOTE", "备注不能为空", 400)
+
+    conn = db.get_connection()
+    try:
+        anchor = conn.execute("SELECT id FROM reports WHERE id = ?", (report_id,)).fetchone()
+        if anchor is None:
+            return _err("NOT_FOUND", "举报不存在", 404)
+        conn.execute(
+            "INSERT INTO report_notes(report_id, admin_id, body, created_at) VALUES (?,?,?,?)",
+            (report_id, g.user["id"], body, utcnow()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return jsonify({"ok": True}), 201
