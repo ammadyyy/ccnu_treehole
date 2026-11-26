@@ -1,0 +1,32 @@
+[Unit]
+Description=EchoHole (回声洞) 后端服务
+Documentation=https://github.com/ammadyyy/ccnu_treehole
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=echohole
+Group=echohole
+WorkingDirectory=/srv/echohole/app/backend
+
+# 配置从 .env 读取（APP_URL/HOST/PORT/DATA_DIR/DATABASE_PATH/UPLOAD_DIR 等）
+EnvironmentFile=/srv/echohole/app/.env
+
+# Waitress 生产承载 Flask（app.py 中的 app 实例）
+ExecStart=/srv/echohole/venv/bin/waitress-serve --listen=0.0.0.0:8000 app:app
+
+# 崩溃自动重启
+Restart=always
+RestartSec=3
+
+# 基础安全加固
+NoNewPrivileges=true
+PrivateTmp=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=echohole
+
+[Install]
+WantedBy=multi-user.target

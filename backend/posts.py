@@ -365,6 +365,60 @@ def get_post(post_id: int):
     )
 
 
+@bp.delete("/api/posts/<int:post_id>")
+@auth.login_required
+def delete_post(post_id: int):
+    """删除帖子（T-17）：保留墓碑，先提交数据库删除再删磁盘文件。"""
+    conn = db.get_connection()
+    try:
+        post = conn.execute(
+            "SELECT p.*, m.user_id AS author_user_id "
+            "FROM posts p JOIN masks m ON p.mask_id = m.id "
+            "WHERE p.id = ? AND p.status = 'published'",
+            (post_id,),
+        ).fetchone()
+        if post is None:
+            return _error("NOT_FOUND", "帖子不存在", 404)
+        if post["author_user_id"] != g.user["id"]:
+            return _error("FORBIDDEN", "无权删除该帖子", 403)
+
+        # 先取出图片路径（事务提交后再删磁盘文件）
+        img_paths = [
+            (r["path"], r["thumb_path"])
+            for r in conn.execute("SELECT path, thumb_path FROM images WHERE post_id = ?", (post_id,)).fetchall()
+        ]
+
+        now = utcnow()
+        # 事务内：删回应、删图片记录、清空帖子正文并置墓碑、标记通知
+        conn.execute("DELETE FROM comments WHERE post_id = ?", (post_id,))
+        conn.execute("DELETE FROM images WHERE post_id = ?", (post_id,))
+        conn.execute(
+            "UPDATE posts SET mask_id = NULL, title = NULL, tag1 = NULL, tag2 = NULL, "
+            "body = NULL, status = 'deleted', deleted_at = ? WHERE id = ?",
+            (now, post_id),
+        )
+        conn.execute(
+            "UPDATE notifications SET content_deleted = 1 WHERE post_id = ?", (post_id,)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # 事务提交后删磁盘文件，失败只记日志
+    from pathlib import Path
+    for path, thumb in img_paths:
+        for rel in (path, thumb):
+            if not rel:
+                continue
+            abs_path = config.Config.UPLOAD_DIR / rel.replace("uploads/", "", 1)
+            try:
+                Path(abs_path).unlink(missing_ok=True)
+            except OSError as exc:
+                logging.getLogger(__name__).warning("删除图片文件失败 %s: %s", abs_path, exc)
+
+    return jsonify({"ok": True})
+
+
 @bp.get("/uploads/<path:filename>")
 def serve_upload(filename: str):
     """服务已上传图片（原图与缩略图）。"""
@@ -489,3 +543,122 @@ def hot_posts():
         return _error("INVALID_TAG", "无效标签", 400)
     data = _get_hot(tag)
     return jsonify({"posts": data, "nextCursor": None})
+
+
+# ---------------------------------------------------------------------------
+# T-19 全文搜索
+# ---------------------------------------------------------------------------
+def _search_post_ids(conn, q: str) -> set:
+    """返回匹配标题/正文/回应的帖子 ID 集合。单/双字 LIKE，三字以上 FTS5 trigram。"""
+    ids: set = set()
+    if len(q) >= 3:
+        # FTS5 trigram：双引号包裹、内部双引号转义，避免特殊字符改变查询语义
+        query = '"' + q.replace('"', '""') + '"'
+        for r in conn.execute("SELECT rowid FROM posts_fts WHERE posts_fts MATCH ?", (query,)):
+            ids.add(r["rowid"])
+        crows = conn.execute(
+            "SELECT rowid FROM comments_fts WHERE comments_fts MATCH ?", (query,)
+        ).fetchall()
+        if crows:
+            cids = [r["rowid"] for r in crows]
+            qm = ",".join("?" for _ in cids)
+            for r in conn.execute(f"SELECT post_id FROM comments WHERE id IN ({qm})", cids):
+                ids.add(r["post_id"])
+    else:
+        like = "%" + q + "%"
+        for r in conn.execute("SELECT id FROM posts WHERE title LIKE ? OR body LIKE ?", (like, like)):
+            ids.add(r["id"])
+        for r in conn.execute("SELECT post_id FROM comments WHERE body LIKE ?", (like,)):
+            ids.add(r["post_id"])
+    return ids
+
+
+@bp.get("/api/search")
+def search():
+    q = (request.args.get("q") or "").strip()
+    tag = request.args.get("tag") or None
+    cursor = request.args.get("cursor") or None
+
+    if not q:
+        return _error("INVALID_QUERY", "请输入至少 1 个字符", 400)
+    if tag is not None and tag not in TAGS:
+        return _error("INVALID_TAG", "无效标签", 400)
+
+    cursor_at = cursor_id = None
+    if cursor:
+        parts = cursor.split(":")
+        if len(parts) == 2:
+            cursor_at, cursor_id = parts[0], int(parts[1])
+
+    conn = db.get_connection()
+    try:
+        post_ids = _search_post_ids(conn, q)
+        if not post_ids:
+            return jsonify({"posts": [], "nextCursor": None})
+
+        where = ["p.status = 'published'"]
+        where.append(f"p.id IN ({','.join('?' for _ in post_ids)})")
+        params: list = list(post_ids)
+        if tag:
+            where.append("(p.tag1 = ? OR p.tag2 = ?)")
+            params += [tag, tag]
+        if cursor_at and cursor_id:
+            where.append("(p.created_at < ? OR (p.created_at = ? AND p.id < ?))")
+            params += [cursor_at, cursor_at, cursor_id]
+
+        sql = (
+            "SELECT p.id, p.title, p.body, p.tag1, p.tag2, p.comment_count, p.created_at, "
+            "m.token AS mask_token, m.status AS mask_status "
+            "FROM posts p JOIN masks m ON p.mask_id = m.id "
+            "WHERE " + " AND ".join(where) + " "
+            "ORDER BY p.created_at DESC, p.id DESC LIMIT ?"
+        )
+        params.append(PAGE_SIZE + 1)
+        rows = conn.execute(sql, params).fetchall()
+
+        has_more = len(rows) > PAGE_SIZE
+        rows = rows[:PAGE_SIZE]
+
+        post_ids_page = [r["id"] for r in rows]
+        thumbs: dict = {}
+        counts: dict = {}
+        if post_ids_page:
+            qm = ",".join("?" for _ in post_ids_page)
+            for r in conn.execute(
+                f"SELECT post_id, thumb_path FROM images WHERE post_id IN ({qm}) AND sort_order = 0",
+                post_ids_page,
+            ).fetchall():
+                thumbs[r["post_id"]] = r["thumb_path"]
+            for r in conn.execute(
+                f"SELECT post_id, COUNT(*) AS c FROM images WHERE post_id IN ({qm}) GROUP BY post_id",
+                post_ids_page,
+            ).fetchall():
+                counts[r["post_id"]] = r["c"]
+
+        posts = []
+        for r in rows:
+            body = r["body"] or ""
+            excerpt = body[:EXCERPT_LEN] + ("…" if len(body) > EXCERPT_LEN else "")
+            tags = [t for t in (r["tag1"], r["tag2"]) if t]
+            posts.append(
+                {
+                    "id": r["id"],
+                    "title": r["title"],
+                    "excerpt": excerpt,
+                    "tags": tags,
+                    "mask": {"token": r["mask_token"], "status": r["mask_status"]},
+                    "commentCount": r["comment_count"],
+                    "thumbnail": thumbs.get(r["id"]),
+                    "imageCount": counts.get(r["id"], 0),
+                    "createdAt": r["created_at"],
+                }
+            )
+
+        next_cursor = None
+        if has_more and rows:
+            last = rows[-1]
+            next_cursor = f"{last['created_at']}:{last['id']}"
+    finally:
+        conn.close()
+
+    return jsonify({"posts": posts, "nextCursor": next_cursor})

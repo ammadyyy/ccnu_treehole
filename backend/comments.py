@@ -161,3 +161,34 @@ def list_comments(post_id: int):
         conn.close()
 
     return jsonify({"comments": comments, "nextCursor": next_cursor})
+
+
+@bp.delete("/api/comments/<int:comment_id>")
+@auth.login_required
+def delete_comment(comment_id: int):
+    """删除回应（T-17）：彻底删除正文，更新回应数，通知标「回应已删除」。"""
+    conn = db.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT c.*, m.user_id AS author_user_id "
+            "FROM comments c JOIN masks m ON c.mask_id = m.id "
+            "WHERE c.id = ?",
+            (comment_id,),
+        ).fetchone()
+        if row is None:
+            return _error("NOT_FOUND", "回应不存在", 404)
+        if row["author_user_id"] != g.user["id"]:
+            return _error("FORBIDDEN", "无权删除该回应", 403)
+
+        conn.execute("DELETE FROM comments WHERE id = ?", (comment_id,))
+        conn.execute(
+            "UPDATE posts SET comment_count = MAX(0, comment_count - 1) WHERE id = ?",
+            (row["post_id"],),
+        )
+        conn.execute(
+            "UPDATE notifications SET comment_deleted = 1 WHERE comment_id = ?", (comment_id,)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify({"ok": True})
