@@ -206,6 +206,17 @@ def login():
     if user is None or not check_password_hash(user["password_hash"], password):
         return _error("BAD_CREDENTIALS", "邮箱或密码错误", 401)
 
+    # 记录最后登录元信息（供管理员查看面具映射）
+    conn = db.get_connection()
+    try:
+        conn.execute(
+            "UPDATE users SET last_login_at = ?, last_login_ip = ?, last_login_ua = ? WHERE id = ?",
+            (utcnow(), request.remote_addr, request.headers.get("User-Agent", ""), user["id"]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
     token = create_session(user["id"])
     resp = jsonify({"ok": True, "user": _user_payload(user)})
     return _set_session_cookie(resp, token)

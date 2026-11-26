@@ -11,6 +11,7 @@ import account
 import admin
 import auth
 import config
+import content
 import db
 import masks
 import posts
@@ -28,6 +29,7 @@ def create_app() -> Flask:
     app.register_blueprint(auth.bp)
     app.register_blueprint(account.bp)
     app.register_blueprint(admin.bp)
+    app.register_blueprint(content.bp)
     app.register_blueprint(masks.bp)
     app.register_blueprint(posts.bp)
 

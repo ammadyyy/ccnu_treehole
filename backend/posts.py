@@ -6,6 +6,10 @@
 from __future__ import annotations
 
 import json
+import logging
+import threading
+import time
+from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, g, jsonify, request, send_from_directory
 
@@ -287,7 +291,201 @@ def list_posts():
     return jsonify({"posts": posts, "nextCursor": next_cursor})
 
 
+@bp.get("/api/posts/<int:post_id>")
+def get_post(post_id: int):
+    """帖子详情（T-15）：返回完整帖子 + 图片（含 sortOrder/caption）+ 回应列表。
+
+    公开接口，不暴露账号邮箱或其他面具关系。
+    """
+    conn = db.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT p.*, m.token AS mask_token, m.status AS mask_status "
+            "FROM posts p JOIN masks m ON p.mask_id = m.id "
+            "WHERE p.id = ? AND p.status = 'published'",
+            (post_id,),
+        ).fetchone()
+        if row is None:
+            return _error("NOT_FOUND", "帖子不存在", 404)
+
+        post_mask_id = row["mask_id"]
+
+        img_rows = conn.execute(
+            "SELECT sort_order, path, thumb_path, width, height, is_animated, caption "
+            "FROM images WHERE post_id = ? ORDER BY sort_order ASC",
+            (post_id,),
+        ).fetchall()
+        images_list = [
+            {
+                "sortOrder": r["sort_order"],
+                "path": r["path"],
+                "thumbPath": r["thumb_path"],
+                "width": r["width"],
+                "height": r["height"],
+                "isAnimated": bool(r["is_animated"]),
+                "caption": r["caption"],
+            }
+            for r in img_rows
+        ]
+
+        # 回应按时间正序；仅发帖面具回应标「楼主」
+        comment_rows = conn.execute(
+            "SELECT c.id, c.mask_id, c.body, c.created_at, m.token AS mask_token, m.status AS mask_status "
+            "FROM comments c JOIN masks m ON c.mask_id = m.id "
+            "WHERE c.post_id = ? ORDER BY c.created_at ASC, c.id ASC",
+            (post_id,),
+        ).fetchall()
+        comments_list = [
+            {
+                "id": r["id"],
+                "body": r["body"],
+                "mask": {"token": r["mask_token"], "status": r["mask_status"]},
+                "isOp": bool(r["mask_id"] == post_mask_id),
+                "createdAt": r["created_at"],
+            }
+            for r in comment_rows
+        ]
+    finally:
+        conn.close()
+
+    return jsonify(
+        {
+            "post": {
+                "id": row["id"],
+                "title": row["title"],
+                "body": row["body"],
+                "tags": [t for t in (row["tag1"], row["tag2"]) if t],
+                "mask": {"token": row["mask_token"], "status": row["mask_status"]},
+                "commentCount": row["comment_count"],
+                "createdAt": row["created_at"],
+                "images": images_list,
+                "comments": comments_list,
+            }
+        }
+    )
+
+
 @bp.get("/uploads/<path:filename>")
 def serve_upload(filename: str):
     """服务已上传图片（原图与缩略图）。"""
     return send_from_directory(config.Config.UPLOAD_DIR, filename)
+
+
+# ---------------------------------------------------------------------------
+# T-14 24 小时热门与缓存
+# ---------------------------------------------------------------------------
+logger = logging.getLogger(__name__)
+
+HOT_CACHE_TTL = 300   # 5 分钟
+HOT_LIMIT = 20
+_hot_lock = threading.Lock()
+_hot_cache: dict = {}  # key -> {"data": [...], "expires_at": float, "refreshing": bool}
+
+
+def _hot_key(tag: str | None) -> str:
+    return tag or "__all__"
+
+
+def _compute_hot(tag: str | None) -> list:
+    """计算热门前 20：最近 24h 公开回应数降序，同数按发布时间倒序。"""
+    since = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    conn = db.get_connection()
+    try:
+        where = ["p.status = 'published'"]
+        params: list = [since]
+        if tag:
+            where.append("(p.tag1 = ? OR p.tag2 = ?)")
+            params += [tag, tag]
+
+        sql = (
+            "SELECT p.id, p.title, p.body, p.tag1, p.tag2, p.comment_count, p.created_at, "
+            "m.token AS mask_token, m.status AS mask_status, "
+            "(SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.created_at >= ?) AS hot_count "
+            "FROM posts p JOIN masks m ON p.mask_id = m.id "
+            "WHERE " + " AND ".join(where) + " "
+            "ORDER BY hot_count DESC, p.created_at DESC, p.id DESC LIMIT ?"
+        )
+        params.append(HOT_LIMIT)
+        rows = conn.execute(sql, params).fetchall()
+
+        post_ids = [r["id"] for r in rows]
+        thumbs: dict = {}
+        counts: dict = {}
+        if post_ids:
+            q = ",".join("?" for _ in post_ids)
+            for r in conn.execute(
+                f"SELECT post_id, thumb_path FROM images WHERE post_id IN ({q}) AND sort_order = 0",
+                post_ids,
+            ).fetchall():
+                thumbs[r["post_id"]] = r["thumb_path"]
+            for r in conn.execute(
+                f"SELECT post_id, COUNT(*) AS c FROM images WHERE post_id IN ({q}) GROUP BY post_id",
+                post_ids,
+            ).fetchall():
+                counts[r["post_id"]] = r["c"]
+
+        cards = []
+        for r in rows:
+            body = r["body"] or ""
+            excerpt = body[:EXCERPT_LEN] + ("…" if len(body) > EXCERPT_LEN else "")
+            tags = [t for t in (r["tag1"], r["tag2"]) if t]
+            cards.append(
+                {
+                    "id": r["id"],
+                    "title": r["title"],
+                    "excerpt": excerpt,
+                    "tags": tags,
+                    "mask": {"token": r["mask_token"], "status": r["mask_status"]},
+                    "commentCount": r["comment_count"],
+                    "thumbnail": thumbs.get(r["id"]),
+                    "imageCount": counts.get(r["id"], 0),
+                    "createdAt": r["created_at"],
+                }
+            )
+        return cards
+    finally:
+        conn.close()
+
+
+def _refresh_hot(key: str, tag: str | None) -> None:
+    """后台刷新热门缓存；失败保留旧值并记日志。"""
+    try:
+        data = _compute_hot(tag)
+        with _hot_lock:
+            _hot_cache[key] = {"data": data, "expires_at": time.time() + HOT_CACHE_TTL, "refreshing": False}
+    except Exception:  # noqa: BLE001
+        logger.exception("热门缓存刷新失败: %s", key)
+        with _hot_lock:
+            entry = _hot_cache.get(key)
+            if entry:
+                entry["refreshing"] = False  # 保留旧值
+
+
+def _get_hot(tag: str | None) -> list:
+    key = _hot_key(tag)
+    with _hot_lock:
+        entry = _hot_cache.get(key)
+        now = time.time()
+        if entry and entry["data"] is not None:
+            if now < entry["expires_at"]:
+                return entry["data"]  # 未过期
+            if not entry["refreshing"]:
+                # 过期但仍有旧值：先返旧值，后台刷新
+                entry["refreshing"] = True
+                threading.Thread(target=_refresh_hot, args=(key, tag), daemon=True).start()
+            return entry["data"]
+
+    # 冷启动：同步计算
+    data = _compute_hot(tag)
+    with _hot_lock:
+        _hot_cache[key] = {"data": data, "expires_at": time.time() + HOT_CACHE_TTL, "refreshing": False}
+    return data
+
+
+@bp.get("/api/posts/hot")
+def hot_posts():
+    tag = request.args.get("tag") or None
+    if tag is not None and tag not in TAGS:
+        return _error("INVALID_TAG", "无效标签", 400)
+    data = _get_hot(tag)
+    return jsonify({"posts": data, "nextCursor": None})
