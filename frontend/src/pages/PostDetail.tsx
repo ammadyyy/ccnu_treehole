@@ -249,6 +249,15 @@ export default function PostDetail() {
           </span>
         ))}
         <span>{formatTime(post.createdAt)}</span>
+        {isAuthor && (
+          <button
+            type="button"
+            onClick={() => setConfirmDeletePost(true)}
+            className="ml-auto text-red-600 hover:underline"
+          >
+            删除帖子
+          </button>
+        )}
       </div>
 
       {error && <p className="mt-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">{error}</p>}
@@ -350,6 +359,16 @@ export default function PostDetail() {
         danger
         onConfirm={onDeleteComment}
         onCancel={() => setConfirmDeleteComment(null)}
+      />
+
+      <ConfirmDialog
+        open={confirmDeletePost}
+        title="删除帖子"
+        message="删除后不可恢复，帖子的正文、全部回应和图片都会被彻底删除。确定删除吗？"
+        confirmText="删除"
+        danger
+        onConfirm={onDeletePost}
+        onCancel={() => setConfirmDeletePost(false)}
       />
     </div>
   )
