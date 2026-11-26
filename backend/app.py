@@ -16,6 +16,7 @@ import content
 import db
 import identity
 import masks
+import notifications
 import posts
 import reports
 
@@ -36,6 +37,7 @@ def create_app() -> Flask:
     app.register_blueprint(content.bp)
     app.register_blueprint(identity.bp)
     app.register_blueprint(masks.bp)
+    app.register_blueprint(notifications.bp)
     app.register_blueprint(posts.bp)
     app.register_blueprint(reports.bp)
 
